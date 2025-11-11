@@ -22,130 +22,8 @@ class RealSingleAttention(nn.Module):
         return attention
 
 class RealMultiHeadAttention(nn.Module):
-    def __init__(self,embed_dim=512,num_heads=8,bias=False):
-        super(RealMultiHeadAttention, self).__init__()
-        #embed_dim = d_model = dk = dv, for now
-        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
-
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim//num_heads
-
-        self.queries = nn.Linear(self.embed_dim, self.embed_dim, bias=bias)
-        self.keys = nn.Linear(self.embed_dim, self.embed_dim, bias=bias)
-        self.values = nn.Linear(self.embed_dim, self.embed_dim, bias=bias)
-
-        self.final_linear = nn.Linear(self.embed_dim,self.embed_dim,bias=bias)
-
-        self.d_model_sqrt_inv = 1/torch.sqrt(torch.tensor(self.embed_dim, dtype=torch.float32))
-
-    def forward(self,q:torch.Tensor,k:torch.Tensor,v:torch.Tensor):
-        #note: q==k==v in self attention, this is to allow for flexibility for e.g. encoder-decoder attention
-        #input_embeddings expected shape: (BATCH,SEQ_LEN,LEN(EMBEDDINGS))
-
-        #reshaping input embedding to be shape (BATCH,SEQ_LEN,NUM_HEADS,LEN(EMBEDDINGS)/NUM_HEADS)
-        #WE ASSUME THEY ARE ALL THE SAME FOR NOW
-
-        Q = self.queries(q)
-        K = self.keys(k)
-        V = self.values(v)
-
-        batch,seq_len,out_dim = Q.shape
-
-        Q = Q.view(batch,seq_len,self.num_heads,self.head_dim)
-        K = K.view(batch,seq_len,self.num_heads,self.head_dim)
-        V = V.view(batch,seq_len,self.num_heads,self.head_dim)
-
-        #transposing to shape (batch,head,seq,head_dim)
-        Q = Q.transpose(-3,-2)
-        K = K.transpose(-3,-2)
-        V = V.transpose(-3,-2)
-
-        QK_scores = torch.matmul(Q, K.transpose(-2, -1))*self.d_model_sqrt_inv
-        attention_weights = torch.softmax(QK_scores,dim=-1)
-        attention = torch.matmul(attention_weights, V)
-        
-        #attention is now shape (batch,head,seq,head_dim)
-        #need to get to shape (batch,seq,embed_dim)
-        attention = attention.transpose(-3,-2).contiguous().view(batch,seq_len,out_dim)
-
-        #final head linear map
-        mha = self.final_linear(attention)
-
-        return mha
-
-class RealEncoderBlock(nn.Module):
-    def __init__(self,embed_dim=512,num_heads=8,hidden_dim=2048,bias=False):
-        super(RealEncoderBlock, self).__init__()
-
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.h_dim = hidden_dim
-
-        self.mha = RealMultiHeadAttention(embed_dim,num_heads,bias=bias)
-        self.layer_norm = nn.LayerNorm(embed_dim)
-        self.feedforward = nn.Sequential(nn.Linear(embed_dim,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,embed_dim))
-        self.layer_norm_ff = nn.LayerNorm(embed_dim)
-
-        
-    def forward(self,q:torch.Tensor,k:torch.Tensor,v:torch.Tensor):
-        residual_connection = q
-        mha = self.mha(q,k,v)
-        normed_mha = self.layer_norm(mha+residual_connection)
-        mha_residual_connection = normed_mha
-        fully_connected_out = self.feedforward(normed_mha)
-        encoder_out = self.layer_norm_ff(fully_connected_out + mha_residual_connection)
-        return encoder_out
-
-class RealViT(nn.Module):
-    def __init__(self,image_size,embed_dim=512,num_heads=8,num_blocks=6,num_classes=10,patch_size=16,bias=False):
-        super(RealViT, self).__init__()
-
-        self.image_size = image_size
-        self.num_classes = num_classes
-
-        self.patch_embedding = nn.Conv2d(in_channels=3, out_channels=embed_dim, kernel_size=patch_size, stride=patch_size)
-        num_patches = (image_size // patch_size) ** 2
-        self.positional_embeddings = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
-        self.class_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-
-
-        self.encoder_blocks = nn.ModuleList([RealEncoderBlock(embed_dim,num_heads,bias=bias) for _ in range(num_blocks)])
-        self.final_layer = nn.Linear(embed_dim,num_classes)
-        self.softmax = nn.Softmax(dim=-1)
-
-    def forward(self,input_images):
-        # input_images is expected to be (BATCHxCHANNELSxHxW)
-        # images to patches:
-
-        #want the input embedding to be Bx(HW/P^2)x(P^2xC), then map the P^2xC to embed_dim size
-        #FIX????? ithink its fine?
-        patches = self.patch_embedding(input_images)
-        #shape = batchxpatchxembed_dim
-        patch_embeddings = patches.flatten(2).transpose(1, 2)
-
-        class_token = self.class_token.expand(input_images.size(0), -1, -1) 
-        input_embeddings = torch.cat((class_token, patch_embeddings), dim=1) 
-        input_embeddings = input_embeddings + self.positional_embeddings
-
-        encoded = input_embeddings
-        for block in self.encoder_blocks:
-            encoded = block(encoded,encoded,encoded)
-
-        class_output = encoded[:, 0]
-        class_outputs = self.final_layer(class_output)
-        class_probs = self.softmax(class_outputs)
-        return class_probs
-
-#something looks off here, specifically at input, maybe at output?
-#check positional encoding and class token, i think patch embedding is fixed now
-#also check output
-
-#TODO: INPUT EMBEDDING AND POSITIONAL EMBEDDING
-
-class RealMultiHeadAttention2(nn.Module):
     def __init__(self, embed_dim=512, num_heads=8, bias=False):
-        super(RealMultiHeadAttention2, self).__init__()
+        super(RealMultiHeadAttention, self).__init__()
         #embed_dim = d_model = dk = dv, for now
         assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
 
@@ -167,7 +45,6 @@ class RealMultiHeadAttention2(nn.Module):
         #input_embeddings expected shape: (BATCH,SEQ_LEN,LEN(EMBEDDINGS))
 
         #reshaping input embedding to be shape (BATCH,SEQ_LEN,NUM_HEADS,LEN(EMBEDDINGS)/NUM_HEADS)
-        #WE ASSUME THEY ARE ALL THE SAME FOR NOW
         Q = self.queries(q)
         K = self.keys(k)
         V = self.values(v)
@@ -193,13 +70,13 @@ class RealMultiHeadAttention2(nn.Module):
 
         return mha,attention_weights
 
-class RealEncoderBlock2(nn.Module):
+class RealEncoderBlock(nn.Module):
     def __init__(self, embed_dim=512, num_heads=8, hidden_dim=4096, bias=False):
-        super(RealEncoderBlock2, self).__init__()
+        super(RealEncoderBlock, self).__init__()
         if hidden_dim is None:
             hidden_dim=4*embed_dim
         
-        self.mha = RealMultiHeadAttention2(embed_dim, num_heads, bias=bias)
+        self.mha = RealMultiHeadAttention(embed_dim, num_heads, bias=bias)
         self.layer_norm1 = nn.LayerNorm(embed_dim)
         self.layer_norm2 = nn.LayerNorm(embed_dim)
 
@@ -217,17 +94,16 @@ class RealEncoderBlock2(nn.Module):
 
         return encoder_out,att_weights
 
-class RealViT2(nn.Module):
+class RealViT(nn.Module):
     def __init__(self, image_size, embed_dim=512, num_heads=8, num_blocks=6, num_classes=10, patch_size=16, bias=False,encoder_ff_hidden_dim=1024):
-        super(RealViT2, self).__init__()
+        super(RealViT, self).__init__()
 
         self.patch_embedding = nn.Conv2d(in_channels=3, out_channels=embed_dim, kernel_size=patch_size, stride=patch_size)
         num_patches = (image_size // patch_size) ** 2
-        #omg it works
         self.class_token = nn.Parameter(torch.randn(1, 1, embed_dim))
         self.positional_embeddings = nn.Parameter(torch.randn(1, num_patches + 1, embed_dim))
 
-        self.encoder_blocks = nn.ModuleList([RealEncoderBlock2(embed_dim, num_heads, bias=bias,hidden_dim=encoder_ff_hidden_dim) for _ in range(num_blocks)])
+        self.encoder_blocks = nn.ModuleList([RealEncoderBlock(embed_dim, num_heads, bias=bias,hidden_dim=encoder_ff_hidden_dim) for _ in range(num_blocks)])
         self.final_layer = nn.Linear(embed_dim, num_classes)
 
     def forward(self, input_images):
@@ -276,11 +152,10 @@ class RealViTconv(nn.Module):
         # self.patch_embedding = nn.Conv2d(in_channels=3, out_channels=embed_dim, kernel_size=patch_size, stride=patch_size)
         self.patch_embedding = PatchEmbedding(in_channels=3, embed_dim=embed_dim, patch_size=patch_size)
         num_patches = (image_size // patch_size) ** 2
-        #omg it works
         self.class_token = nn.Parameter(torch.randn(1, 1, embed_dim))
         self.positional_embeddings = nn.Parameter(torch.randn(1, num_patches + 1, embed_dim))
 
-        self.encoder_blocks = nn.ModuleList([RealEncoderBlock2(embed_dim, num_heads, bias=bias,hidden_dim=encoder_ff_hidden_dim) for _ in range(num_blocks)])
+        self.encoder_blocks = nn.ModuleList([RealEncoderBlock(embed_dim, num_heads, bias=bias,hidden_dim=encoder_ff_hidden_dim) for _ in range(num_blocks)])
         self.final_layer = nn.Linear(embed_dim, num_classes)
 
     def forward(self, input_images):

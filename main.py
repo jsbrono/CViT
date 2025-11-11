@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from attention import RealViT,RealViT2,RealViTconv
+from attention import RealViT,RealViTconv
 from c_attention import ComplexViT,initialise_complex_weights,ComplexViTconv
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
@@ -13,6 +13,7 @@ import numpy as np
 class ToComplex64:
     def __call__(self, tensor):
         return tensor.to(torch.complex64)
+
 
 if __name__=="__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -30,43 +31,21 @@ if __name__=="__main__":
     lr= 3e-4
     weight_decay = 0
 
-    # model = RealViT2(image_size,embed_dim=embed_dim,num_heads=num_heads,num_blocks=num_blocks,num_classes=num_classes,patch_size=patch_size,encoder_ff_hidden_dim=encoder_ff_hidden_dim).to(device)
+    # model = RealViT(image_size,embed_dim=embed_dim,num_heads=num_heads,num_blocks=num_blocks,num_classes=num_classes,patch_size=patch_size,encoder_ff_hidden_dim=encoder_ff_hidden_dim).to(device)
     # model = ComplexViT(image_size,embed_dim=embed_dim,num_heads=num_heads,num_blocks=num_blocks,num_classes=num_classes,patch_size=patch_size,encoder_ff_hidden_dim=encoder_ff_hidden_dim).to(device)
     model = ComplexViTconv(image_size,embed_dim=embed_dim,num_heads=num_heads,num_blocks=num_blocks,num_classes=num_classes,patch_size=patch_size,encoder_ff_hidden_dim=encoder_ff_hidden_dim).to(device)
     # model = RealViTconv(image_size,embed_dim=embed_dim,num_heads=num_heads,num_blocks=num_blocks,num_classes=num_classes,patch_size=patch_size,encoder_ff_hidden_dim=encoder_ff_hidden_dim).to(device)
 
     initialise_complex_weights(model,device)
 
-    if transforms_type == "advanced":
-        train_transform_list = [
-        transforms.RandomCrop(image_size, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15),
-        transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=10),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-        transforms.RandomPerspective(distortion_scale=0.2, p=0.5), 
-        transforms.RandomGrayscale(p=0.1),
-        transforms.GaussianBlur(kernel_size=3),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2464, 0.2428, 0.2607]),
-        transforms.RandomErasing(p=0.5, scale=(0.02, 0.2)),
-        ]
-    
-    elif transforms_type == "none":
-        train_transform_list = [
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2464, 0.2428, 0.2607]),
-        ]
-
-    else:
-        train_transform_list = [
-        transforms.RandomCrop(image_size, padding=4), 
-        transforms.RandomHorizontalFlip(),  
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),    
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2464, 0.2428, 0.2607]),
-        transforms.RandomErasing(p=0.5, scale=(0.02, 0.2)),  
-        ]
+    train_transform_list = [
+    transforms.RandomCrop(image_size, padding=4), 
+    transforms.RandomHorizontalFlip(),  
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),    
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2464, 0.2428, 0.2607]),
+    transforms.RandomErasing(p=0.5, scale=(0.02, 0.2)), 
+    ]
 
     if model.__class__.__name__ == "ComplexViT":
         train_transform_list.append(ToComplex64())
