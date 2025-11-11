@@ -7,309 +7,102 @@ from complex_activations import CReLU,CGELU
 from complex_layers import Complex_Dropout
 
 class ComplexMultiHeadAttention(nn.Module):
-    def __init__(self,embed_dim=512,num_heads=8,bias=False):
+    def __init__(
+        self,
+        embed_dim=512,
+        num_heads=8,
+        bias=False,
+        score_mode="dot",        # "dot" | "linear" | "complex_learned"
+        softmax_mode="real"      # "real" | "abs"
+    ):
         super(ComplexMultiHeadAttention, self).__init__()
-        #embed_dim = d_model = dk = dv
+
+        # embed_dim = d_model = dk = dv
         assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
 
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.head_dim = embed_dim//num_heads
+        self.head_dim = embed_dim // num_heads
 
-        self.queries = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        self.keys = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        self.values = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
+        self.queries = nn.Linear(embed_dim, embed_dim, bias=bias, dtype=torch.complex64)
+        self.keys    = nn.Linear(embed_dim, embed_dim, bias=bias, dtype=torch.complex64)
+        self.values  = nn.Linear(embed_dim, embed_dim, bias=bias, dtype=torch.complex64)
 
-        self.final_linear = nn.Linear(self.embed_dim,self.embed_dim,bias=bias,dtype=torch.complex64)
+        if score_mode == "linear":
+            self.score_layer = nn.Linear(2 * self.head_dim, self.head_dim, bias=True)
+        elif score_mode == "complex_learned":
+            self.scoring_layer   = nn.Linear(2 * self.head_dim, self.head_dim, dtype=torch.complex64)
+            self.complex_to_real = nn.Linear(2 * self.head_dim, self.head_dim, dtype=torch.float32)
 
-        self.d_model_sqrt_inv = 1/torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
+        self.final_linear = nn.Linear(embed_dim, embed_dim, bias=bias, dtype=torch.complex64)
 
+        self.score_mode = score_mode
+        self.softmax_mode = softmax_mode
+
+        self.d_model_sqrt_inv = 1 / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
         self.dropout = Complex_Dropout(0.1)
 
-    def forward(self,q:torch.Tensor,k:torch.Tensor,v:torch.Tensor):
-        #q,k and v are tuples (real_q,imag_q)
+    # shared reshape for Q,K,V
+    def _split_heads(self, x):
+        batch, seq_len, _ = x.shape
+        return x.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        #reshaping input embedding to be shape (BATCH,SEQ_LEN,NUM_HEADS,LEN(EMBEDDINGS)/NUM_HEADS)
-        #WE ASSUME THEY ARE ALL THE SAME FOR NOW
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+        # reshaping input embedding to be shape (BATCH,SEQ_LEN,NUM_HEADS,EMBEDDING/NUM_HEADS)
 
         Q = self.queries(q)
         K = self.keys(k)
         V = self.values(v)
 
-        batch,seq_len,out_dim = Q.shape
+        batch, seq_len, out_dim = Q.shape
 
-        Q = Q.view(batch,seq_len,self.num_heads,self.head_dim)
-        K = K.view(batch,seq_len,self.num_heads,self.head_dim)
-        V = V.view(batch,seq_len,self.num_heads,self.head_dim)
+        Q = self._split_heads(Q)
+        K = self._split_heads(K)
+        V = self._split_heads(V)
 
-        #transposing to shape (batch,head,seq,head_dim)
-        Q = Q.transpose(-3,-2)
-        K = K.transpose(-3,-2)
-        V = V.transpose(-3,-2)
+        if self.score_mode == "dot":
+            Kt = K.transpose(-2, -1).conj()
+            att_scores = torch.matmul(Q, Kt) * self.d_model_sqrt_inv
 
-        #this needs to be not naive, leave as is for now
-        K = K.transpose(-2, -1).conj()
-        QK_scores = torch.matmul(Q, K)*self.d_model_sqrt_inv
+        elif self.score_mode == "linear":
+            Kt = K.transpose(-2, -1).conj()
+            scores = torch.matmul(Q, Kt) * self.d_model_sqrt_inv
+            scores = torch.cat([scores.real, scores.imag], dim=-1)
+            att_scores = self.score_layer(scores)
 
-        # QK_scores_mag = torch.abs(QK_scores)
-        attention_weights = torch.softmax(QK_scores.real,dim=-1).type(torch.complex64)
+        elif self.score_mode == "complex_learned":
+            scored = self.scoring_layer(torch.cat([Q, K], dim=-1)) * self.d_model_sqrt_inv
+            cat = torch.cat([scored.real, scored.imag], dim=-1)
+            att_scores = self.complex_to_real(cat)
 
-        attention_output = torch.matmul(attention_weights, V)
+        else:
+            raise ValueError(f"Unknown score_mode: {self.score_mode}")
 
-        #attention is now shape (batch,head,seq,head_dim)
-        #need to get to shape (batch,seq,embed_dim)
-        attention_output = attention_output.transpose(-3,-2).contiguous().view(batch,seq_len,out_dim)
+        if self.softmax_mode == "real":
+            weights_input = att_scores.real if torch.is_complex(att_scores) else att_scores
+        else:  
+            weights_input = torch.abs(att_scores)
 
-        #final head linear map
+        attention_weights = torch.softmax(weights_input, dim=-1).type(torch.complex64)
+        attention_output  = torch.matmul(attention_weights, V)
+
+        # attention is now shape (batch,head,seq,head_dim)
+        # need to get to shape (batch,seq,embed_dim)
+        attention_output = attention_output.transpose(1, 2).contiguous().view(batch, seq_len, out_dim)
+
+        # final head linear map
         mha = self.final_linear(attention_output)
         mha = self.dropout(mha)
 
-        return mha,QK_scores
-
-class ComplexMultiHeadAttentionv2(nn.Module):
-    def __init__(self,embed_dim=512,num_heads=8,bias=False):
-        super(ComplexMultiHeadAttentionv2, self).__init__()
-        #embed_dim = d_model = dk = dv
-        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
-
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim//num_heads
-
-        self.queries = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        self.keys = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        self.values = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        # seq len * 2, seq len 
-        self.score_layer = nn.Linear(130,65)
-
-        self.final_linear = nn.Linear(self.embed_dim,self.embed_dim,bias=bias,dtype=torch.complex64)
-
-        self.d_model_sqrt_inv = 1/torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
-
-        self.dropout = Complex_Dropout(0.1)
-
-    def forward(self,q:torch.Tensor,k:torch.Tensor,v:torch.Tensor):
-        #q,k and v are tuples (real_q,imag_q)
-
-        #reshaping input embedding to be shape (BATCH,SEQ_LEN,NUM_HEADS,LEN(EMBEDDINGS)/NUM_HEADS)
-        #WE ASSUME THEY ARE ALL THE SAME FOR NOW
-
-        Q = self.queries(q)
-        K = self.keys(k)
-        V = self.values(v)
-
-        batch,seq_len,out_dim = Q.shape
-
-        Q = Q.view(batch,seq_len,self.num_heads,self.head_dim)
-        K = K.view(batch,seq_len,self.num_heads,self.head_dim)
-        V = V.view(batch,seq_len,self.num_heads,self.head_dim)
-
-        #transposing to shape (batch,head,seq,head_dim)
-        Q = Q.transpose(-3,-2)
-        K = K.transpose(-3,-2)
-        V = V.transpose(-3,-2)
-
-        K = K.transpose(-2, -1).conj()
-        QK_scores = torch.matmul(Q, K)*self.d_model_sqrt_inv
-        QK_scores = self.score_layer(torch.cat([QK_scores.real,QK_scores.imag],dim=-1))
-
-        attention_weights = torch.softmax(QK_scores,dim=-1).type(torch.complex64)
-
-        attention_output = torch.matmul(attention_weights, V)
-
-        #attention is now shape (batch,head,seq,head_dim)
-        #need to get to shape (batch,seq,embed_dim)
-        attention_output = attention_output.transpose(-3,-2).contiguous().view(batch,seq_len,out_dim)
-
-        #final head linear map
-        mha = self.final_linear(attention_output)
-        mha = self.dropout(mha)
-
-        return mha, QK_scores
-
-class ComplexMultiHeadAttentionv3(nn.Module):
-    def __init__(self,embed_dim=512,num_heads=8,bias=False):
-        super(ComplexMultiHeadAttentionv3, self).__init__()
-        #embed_dim = d_model = dk = dv
-        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
-
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim//num_heads
-
-        self.queries = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        self.keys = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        self.values = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        # seq len * 2, seq len 
-        self.scoring_layer = nn.Linear(2*self.head_dim,self.head_dim,dtype=torch.complex64)
-        self.complex_to_real = nn.Linear(2*self.head_dim,65,dtype=torch.float32)
-
-        self.final_linear = nn.Linear(self.embed_dim,self.embed_dim,bias=bias,dtype=torch.complex64)
-
-        self.d_model_sqrt_inv = 1/torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
-
-        self.dropout = Complex_Dropout(0.1)
-
-    def forward(self,q:torch.Tensor,k:torch.Tensor,v:torch.Tensor):
-        # q,k and v are tuples (real_q,imag_q)
-
-        # reshaping input embedding to be shape (BATCH,SEQ_LEN,NUM_HEADS,LEN(EMBEDDINGS)/NUM_HEADS)
-        # WE ASSUME THEY ARE ALL THE SAME FOR NOW
-
-        Q = self.queries(q)
-        K = self.keys(k)
-        V = self.values(v)
-
-        batch,seq_len,out_dim = Q.shape
-
-        Q = Q.view(batch,seq_len,self.num_heads,self.head_dim)
-        K = K.view(batch,seq_len,self.num_heads,self.head_dim)
-        V = V.view(batch,seq_len,self.num_heads,self.head_dim)
-
-        #transposing to shape (batch,head,seq,head_dim)
-        Q = Q.transpose(-3,-2)
-        K = K.transpose(-3,-2)
-        V = V.transpose(-3,-2)
-
-        QK_scores = self.scoring_layer(torch.cat([Q,K],dim=-1)) * self.d_model_sqrt_inv
-        QK_scores = self.complex_to_real(torch.cat([QK_scores.real,QK_scores.imag],dim=-1))
-
-        attention_weights = torch.softmax(QK_scores,dim=-1).type(torch.complex64)
-        attention_output = torch.matmul(attention_weights,V)
-
-        #attention is now shape (batch,head,seq,head_dim)
-        #need to get to shape (batch,seq,embed_dim)
-        attention_output = attention_output.transpose(-3,-2).contiguous().view(batch,seq_len,out_dim)
-
-        #final head linear map
-        mha = self.final_linear(attention_output)
-        mha = self.dropout(mha)
-
-        return mha, QK_scores
-
-class ComplexMultiHeadAttention_RealDP(nn.Module):
-    def __init__(self,embed_dim=512,num_heads=8,bias=False):
-        super(ComplexMultiHeadAttention_RealDP, self).__init__()
-        #embed_dim = d_model = dk = dv
-        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
-
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim//num_heads
-
-        self.queries = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        self.keys = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        self.values = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-
-        self.final_linear = nn.Linear(self.embed_dim,self.embed_dim,bias=bias,dtype=torch.complex64)
-
-        self.d_model_sqrt_inv = 1/torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
-
-        self.dropout = Complex_Dropout(0.1)
-
-    def forward(self,q:torch.Tensor,k:torch.Tensor,v:torch.Tensor):
-        # q,k and v are tuples (real_q,imag_q)
-
-        # reshaping input embedding to be shape (BATCH,SEQ_LEN,NUM_HEADS,LEN(EMBEDDINGS)/NUM_HEADS)
-        # WE ASSUME THEY ARE ALL THE SAME FOR NOW
-
-        Q = self.queries(q)
-        K = self.keys(k)
-        V = self.values(v)
-
-        batch,seq_len,out_dim = Q.shape
-
-        Q = Q.view(batch,seq_len,self.num_heads,self.head_dim)
-        K = K.view(batch,seq_len,self.num_heads,self.head_dim)
-        V = V.view(batch,seq_len,self.num_heads,self.head_dim)
-
-        #transposing to shape (batch,head,seq,head_dim)
-        Q = Q.transpose(-3,-2)
-        K = K.transpose(-3,-2)
-        V = V.transpose(-3,-2)
-
-        K = K.transpose(-2, -1).conj()
-        attention_weights = torch.matmul(Q, K)*self.d_model_sqrt_inv
-
-        attention_weights = torch.softmax(attention_weights.real,dim=-1).type(torch.complex64)
-        attention_output = torch.matmul(attention_weights,V)
-
-        #attention is now shape (batch,head,seq,head_dim)
-        #need to get to shape (batch,seq,embed_dim)
-        attention_output = attention_output.transpose(-3,-2).contiguous().view(batch,seq_len,out_dim)
-
-        #final head linear map
-        mha = self.final_linear(attention_output)
-        mha = self.dropout(mha)
-
-        return mha, attention_weights
-
-class ComplexMultiHeadAttention_Mag(nn.Module):
-    def __init__(self,embed_dim=512,num_heads=8,bias=False):
-        super(ComplexMultiHeadAttention_Mag, self).__init__()
-        #embed_dim = d_model = dk = dv
-        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
-
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim//num_heads
-
-        self.queries = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        self.keys = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-        self.values = nn.Linear(self.embed_dim, self.embed_dim, bias=bias,dtype=torch.complex64)
-
-        self.final_linear = nn.Linear(self.embed_dim,self.embed_dim,bias=bias,dtype=torch.complex64)
-
-        self.d_model_sqrt_inv = 1/torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
-
-        self.dropout = Complex_Dropout(0.1)
-
-    def forward(self,q:torch.Tensor,k:torch.Tensor,v:torch.Tensor):
-        # q,k and v are tuples (real_q,imag_q)
-
-        # reshaping input embedding to be shape (BATCH,SEQ_LEN,NUM_HEADS,LEN(EMBEDDINGS)/NUM_HEADS)
-        # WE ASSUME THEY ARE ALL THE SAME FOR NOW
-
-        Q = self.queries(q)
-        K = self.keys(k)
-        V = self.values(v)
-
-        batch,seq_len,out_dim = Q.shape
-
-        Q = Q.view(batch,seq_len,self.num_heads,self.head_dim)
-        K = K.view(batch,seq_len,self.num_heads,self.head_dim)
-        V = V.view(batch,seq_len,self.num_heads,self.head_dim)
-
-        #transposing to shape (batch,head,seq,head_dim)
-        Q = Q.transpose(-3,-2)
-        K = K.transpose(-3,-2)
-        V = V.transpose(-3,-2)
-
-        K = K.transpose(-2, -1).conj()
-        attention_weights = torch.matmul(Q, K)*self.d_model_sqrt_inv
-
-        attention_weights = torch.softmax(torch.abs(attention_weights),dim=-1).type(torch.complex64)
-        attention_output = torch.matmul(attention_weights,V)
-
-        #attention is now shape (batch,head,seq,head_dim)
-        #need to get to shape (batch,seq,embed_dim)
-        attention_output = attention_output.transpose(-3,-2).contiguous().view(batch,seq_len,out_dim)
-
-        #final head linear map
-        mha = self.final_linear(attention_output)
-        mha = self.dropout(mha)
-
-        return mha, attention_weights
+        # preserve old output format
+        return mha, att_scores
 
 class ComplexEncoderBlock(nn.Module):
     def __init__(self, embed_dim=512, num_heads=8, hidden_dim=512, bias=False):
         super(ComplexEncoderBlock, self).__init__()
         if hidden_dim is None:
             hidden_dim=4*embed_dim
-        self.mha = ComplexMultiHeadAttentionv2(embed_dim, num_heads, bias=bias)
-        #layer norm for complex nums
-        #self.layer_norm1 = Complex_LayerNorm_split(embed_dim)
-        #self.layer_norm2 = Complex_LayerNorm_split(embed_dim)
+        self.mha = ComplexMultiHeadAttention(embed_dim, num_heads, bias=bias)
         self.layer_norm1 = ComplexLayerNormWhitening(embed_dim)
         self.layer_norm2 = ComplexLayerNormWhitening(embed_dim)
         self.feedforward = nn.Sequential(nn.Linear(embed_dim, hidden_dim,dtype=torch.complex64),CReLU(),nn.Linear(hidden_dim, embed_dim,dtype=torch.complex64),Complex_Dropout(0.1))
@@ -332,7 +125,6 @@ class ComplexViT(nn.Module):
 
         self.patch_embedding = nn.Conv2d(in_channels=3, out_channels=embed_dim, kernel_size=patch_size, stride=patch_size,dtype=torch.complex64)
         num_patches = (image_size // patch_size) ** 2
-        #omg it works
         self.class_token = nn.Parameter(torch.randn(1, 1, embed_dim))
         self.positional_embeddings = nn.Parameter(torch.randn(1, num_patches + 1, embed_dim))
 
@@ -395,7 +187,6 @@ class ComplexViTconv(nn.Module):
 
         self.patch_embedding = ComplexPatchEmbedding(in_channels=3, embed_dim=embed_dim, patch_size=patch_size)
         num_patches = (image_size // patch_size) ** 2
-        #omg it works
         self.class_token = nn.Parameter(torch.randn(1, 1, embed_dim)) 
         self.positional_embeddings = nn.Parameter(torch.randn(1, num_patches + 1, embed_dim))
 

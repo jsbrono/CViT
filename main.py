@@ -26,14 +26,13 @@ if __name__=="__main__":
     num_classes = 10
     patch_size = 4
     encoder_ff_hidden_dim = embed_dim*4
-    transforms_type = "advanced"
     train_epochs = 50
     lr= 3e-4
     weight_decay = 0
 
     # model = RealViT(image_size,embed_dim=embed_dim,num_heads=num_heads,num_blocks=num_blocks,num_classes=num_classes,patch_size=patch_size,encoder_ff_hidden_dim=encoder_ff_hidden_dim).to(device)
-    # model = ComplexViT(image_size,embed_dim=embed_dim,num_heads=num_heads,num_blocks=num_blocks,num_classes=num_classes,patch_size=patch_size,encoder_ff_hidden_dim=encoder_ff_hidden_dim).to(device)
-    model = ComplexViTconv(image_size,embed_dim=embed_dim,num_heads=num_heads,num_blocks=num_blocks,num_classes=num_classes,patch_size=patch_size,encoder_ff_hidden_dim=encoder_ff_hidden_dim).to(device)
+    model = ComplexViT(image_size,embed_dim=embed_dim,num_heads=num_heads,num_blocks=num_blocks,num_classes=num_classes,patch_size=patch_size,encoder_ff_hidden_dim=encoder_ff_hidden_dim).to(device)
+    # model = ComplexViTconv(image_size,embed_dim=embed_dim,num_heads=num_heads,num_blocks=num_blocks,num_classes=num_classes,patch_size=patch_size,encoder_ff_hidden_dim=encoder_ff_hidden_dim).to(device)
     # model = RealViTconv(image_size,embed_dim=embed_dim,num_heads=num_heads,num_blocks=num_blocks,num_classes=num_classes,patch_size=patch_size,encoder_ff_hidden_dim=encoder_ff_hidden_dim).to(device)
 
     initialise_complex_weights(model,device)
@@ -60,14 +59,12 @@ if __name__=="__main__":
     print(f"Attention heads: {num_heads}")
     print(f"FF hidden dim: {encoder_ff_hidden_dim}")
     print(f"Num classes: {num_classes}")
-    print(f"Data augmentation: {transforms_type}")
     print(f"Learning rate: {lr}")
     print(f"Weight decay: {weight_decay}")
 
-    train_dataset = torchvision.datasets.CIFAR10(root='./data', train=True, transform=train_transform)
+    train_dataset = torchvision.datasets.CIFAR10(root='./data', train=True, transform=train_transform, download=True)
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True,num_workers=4)
 
-    #change weight decay?
     #lr scheduler?
     optimizer = optim.Adam(model.parameters(),lr=lr,weight_decay=weight_decay)
     loss_fn = nn.CrossEntropyLoss() 
@@ -92,22 +89,18 @@ if __name__=="__main__":
         f"_ed{embed_dim}"
         f"_fc{encoder_ff_hidden_dim}"
         f"_ps{patch_size}"
-        f"_tf{transforms_type}"
         f"_{train_epochs}epochs"
         f"_{lr}lr"
         f"_{weight_decay}wd"
-        f""
-        f"v3"
     )
 
     print(f"Model string: {model_string}")
 
     train_accuracies,train_losses,test_accuracies,x_steps,epoch_times = train(model,optimizer,train_loader,device,loss_fn,num_epochs=train_epochs,savepath="diss_models/"+model_string+".pth",test_loader=test_loader)
 
-    data_savepath = "model_data/"+model_string
-    np.save(data_savepath+"_train_acc.npy",train_accuracies)
-    np.save(data_savepath+"_train_losses.npy",train_losses)
-    np.save(data_savepath+"_test_acc.npy",test_accuracies)
-    np.save(data_savepath+"_epoch_times.npy",epoch_times)
+    print("train_accuracies:", train_accuracies)
+    print("train_losses:", train_losses)
+    print("test_accuracies:", test_accuracies)
+    print("epoch_times:", epoch_times)
 
     test(model,test_loader,device)
