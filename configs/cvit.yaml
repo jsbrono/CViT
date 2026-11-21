@@ -1,0 +1,20 @@
+# Complex-valued ViT from the dissertation (Appendix C, Table C.2). embed_dim is chosen so the
+# real-equivalent parameter count is just under the real baseline's (5.05M vs 5.28M).
+model:
+  complex_valued: true
+  embed_dim: 176
+  ff_dim: 704
+  num_heads: 8
+  num_blocks: 6
+  patch_size: 4
+  patch_stem: conv
+  scoring: linear
+  layer_norm: whitening
+  activation: relu
+
+train:
+  epochs: 50
+  batch_size: 64
+  lr: 3.0e-4
+  weight_decay: 0.0
+  augment: true

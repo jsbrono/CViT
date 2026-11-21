@@ -1,0 +1,17 @@
+# Real-valued baseline from the dissertation (Appendix C, Table C.1).
+model:
+  complex_valued: false
+  embed_dim: 256
+  ff_dim: 1024
+  num_heads: 8
+  num_blocks: 6
+  patch_size: 4
+  patch_stem: conv
+  activation: gelu
+
+train:
+  epochs: 50
+  batch_size: 64
+  lr: 3.0e-4
+  weight_decay: 0.0
+  augment: true

@@ -1,0 +1,19 @@
+# Ablation (dissertation Section 4.4.2): split GELU instead of split ReLU.
+model:
+  complex_valued: true
+  embed_dim: 176
+  ff_dim: 704
+  num_heads: 8
+  num_blocks: 6
+  patch_size: 4
+  patch_stem: conv
+  scoring: linear
+  layer_norm: whitening
+  activation: gelu
+
+train:
+  epochs: 50
+  batch_size: 64
+  lr: 3.0e-4
+  weight_decay: 0.0
+  augment: true
